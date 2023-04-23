@@ -483,7 +483,7 @@ gdalpath = maybedownload(url)
         @test order(dims(rast)) == (ForwardOrdered(), ForwardOrdered(), ForwardOrdered())
         @test span(rast) == (Regular(1.0), Regular(1.0), NoSpan())
         @test sampling(rast) == (Intervals(Start()), Intervals(Start()), NoSampling())
-        @test index(rast) == (LinRange(0.0, 239.0, 240), LinRange(0.0, 179.0, 180), 1:1)
+        @test index(rast) == (0.0::1.0:239.0, 0.0:1.0:179.0), 1:1)
     end
 
 end
