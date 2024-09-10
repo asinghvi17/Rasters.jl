@@ -18,3 +18,9 @@ RA._get_haschunks(var::ZD.ZarrVariable) = DiskArrays.haschunks(var.zarray)
 
 RA._sourcetrait(::ZD.ZarrVariable) = Zarrsource()
 RA._sourcetrait(::ZD.ZarrDataset) = Zarrsource()
+
+@inline function RA.get_scale(metadata::RA.Metadata{<: Zarrsource}, scaled::Bool)
+    scale = scaled ? get(metadata, "scale_factor", nothing) : nothing
+    offset = scaled ? get(metadata, "add_offset", nothing) : nothing
+    return scale, offset
+end
