@@ -73,14 +73,21 @@ _missingval_or_missing(x) = _maybe_to_missing(missingval(x))
 _maybe_to_missing(::Union{Nothing,NoKW}) = missing
 _maybe_to_missing(missingval) = missingval
 
-_writeable_missing(filename::Nothing, T; kw...) = missing
-_writeable_missing(filename::AbstractString, T; kw...) = _writeable_missing(T; kw...)
-function _writeable_missing(::Type{Missing}; verbose=true)
-    missingval = _type_missingval(UInt8)
-    verbose && @info "`missingval` set to $missingval on disk"
-    return missingval
-end
-function _writeable_missing(T; verbose=true)
+maybe_eps(dims::DimTuple; kw...) = map(maybe_eps, dims; kw...)
+maybe_eps(dim::Dimension; kw...) = maybe_eps(eltype(dim); kw...)
+maybe_eps(x; kw...) = maybe_eps(typeof(x); kw...)
+maybe_eps(::Type; kw...) = nothing
+maybe_eps(T::Type{<:AbstractFloat}; kw...) = _default_eps(T; kw...)
+
+# These are pretty random defaults, but seem to work
+_default_eps(T::Type{<:Float32}; grow=true) = grow ? eps(T) : 100eps(T)
+_default_eps(T::Type{<:Float64}; grow=true) = grow ? eps(T) : 1000eps(T)
+_default_eps(T::Type{<:Integer}) = T(1)
+_default_eps(::Type) = nothing
+
+_writeable_missing(filename::Nothing, T) = missing
+_writeable_missing(filename::AbstractString, T) = _writeable_missing(T)
+function _writeable_missing(T)
     missingval = _type_missingval(Missings.nonmissingtype(T))
     verbose && @info "`missingval` set to $missingval on disk"
     return missingval
@@ -126,24 +133,16 @@ _extent2dims(to::Extents.Extent, size, res; kw...) = _size_and_res_error()
 function _extent2dims(to::Extents.Extent, size::Union{Nothing,NoKW}, res; kw...)
     _extent2dims(to, size, _match_to_extent(to, res); kw...)
 end
-function _extent2dims(to::Extents.Extent, size::Union{Nothing,NoKW}, res::Tuple; 
-    sampling::Tuple, kw...
-)
-    ranges = map(values(to), res, sampling) do (start, stop), step, s
-        r = if step >= zero(step)
-            range(; start, step, stop)
-        else
-            range(; start=stop, step, stop=start)
-        end
-        r = if s isa Intervals
-            if locus(s) isa Start
-                r[1:end-1]
-            elseif locus(s) isa End
-                r[2:end]
-            else # Center
-                r .+ abs(step) / 2
-            end
-        end
+function _extent2dims(to::Extents.Extent{K}, size::Nothing, res::Real, crs) where K
+    tuple_res = ntuple(_ -> res, length(K))
+    _extent2dims(to, size, tuple_res, crs)
+end
+function _extent2dims(to::Extents.Extent{K}, size::Nothing, res, crs) where K
+    ranges = map(values(to), res) do bounds, r
+        start, stop_closed = bounds
+        stop_open = stop_closed + maybe_eps(stop_closed; grow=false)
+        length = ceil(Int, (stop_open - start) / r)
+        range(; start, step=r, length)
     end
     return _extent2dims(to, ranges; sampling, kw...)
 end
@@ -159,7 +158,13 @@ function _extent2dims(to::Extents.Extent, size::Tuple, res::Union{Nothing,NoKW};
             range(; start, stop, length=length+1)[1:end-1]
         end
     end
-    return _extent2dims(to, ranges; sampling, crs, mappedcrs)
+    ranges = map(values(to), size) do bounds, length
+        start, stop_closed = bounds
+        stop_open = stop_closed + maybe_eps(stop_closed; grow=false)
+        step = (stop_open - start) / length
+        range(; start, step, length)
+    end
+    return _extent2dims(to, ranges, crs)
 end
 function _extent2dims(::Extents.Extent{K}, ranges; crs, mappedcrs, sampling::Tuple) where K
     crs = isnokw(crs) ? nothing : crs 
