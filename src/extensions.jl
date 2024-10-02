@@ -157,43 +157,74 @@ $EXPERIMENTAL
 warp(args...; kw...) = throw_extension_error(warp, "ArchGDAL", :RastersArchGDALExt, args)
 
 """
-    cellsize(x)
+    cellarea(x; radius = 6371008.8, area_in_crs = false)
 
-Gives the approximate size of each cell in square km.
-This function works for any projection, using an algorithm for polygons on a sphere. It approximates the true size to about 0.1%, depending on latitude.
+Gives the approximate area of each gridcell of `x`.
+By assuming the earth is a sphere, it approximates the true size to about 0.1%, depending on latitude.
 
-Run `using ArchGDAL` to make this method available.
+Run `using ArchGDAL` to make this method fully available.
 
-# Arguments
-
-- `x`: A `Raster` or a `Tuple` of `X` and `Y` dimensions.
+# Keywords
+- `radius`: the radius of the sphere of the coordinates. 
+    Defaults to the arithmetic mean radius of the earth in meters.
+- `area_in_crs`: if `true`, returns the area in the units of the crs of `x`, without any reprojection. 
+    This is equal to the distance between the bounds of each gridcell. `ArchGDAL` does not to be loaded if this is set to `true`.
+    `false` by default.
 
 ## Example
 
 ```julia
 using Rasters, ArchGDAL, Rasters.Lookups
-dimz = X(Projected(90.0:10.0:120; sampling=Intervals(Start()), order=ForwardOrdered(), span=Regular(10.0), crs=EPSG(4326))),
-       Y(Projected(0.0:10.0:50; sampling=Intervals(Start()), order=ForwardOrdered(), span=Regular(10.0), crs=EPSG(4326)))
-
-cs = cellsize(dimz)
+xdim = X(Projected(90.0:10.0:120; sampling=Intervals(Start()), crs=EPSG(4326)))
+ydim = Y(Projected(0.0:10.0:50; sampling=Intervals(Start()), crs=EPSG(4326)))
+myraster = rand(xdim, ydim)
+cs = cellarea(myraster)
 
 # output
-4×6 Raster{Float64,2} with dimensions:
-  X Projected{Float64} 90.0:10.0:120.0 ForwardOrdered Regular Intervals{Start} crs: EPSG,
-  Y Projected{Float64} 0.0:10.0:50.0 ForwardOrdered Regular Intervals{Start} crs: EPSG
-extent: Extent(X = (90.0, 130.0), Y = (0.0, 60.0))
-missingval: missing
-crs: EPSG:4326
-parent:
-        0.0       10.0       20.0        30.0        40.0            50.0
-  90.0  1.2332e6   1.1952e6   1.12048e6   1.01158e6   8.72085e5  706488.0
- 100.0  1.2332e6   1.1952e6   1.12048e6   1.01158e6   8.72085e5  706488.0
- 110.0  1.2332e6   1.1952e6   1.12048e6   1.01158e6   8.72085e5  706488.0
- 120.0  1.2332e6   1.1952e6   1.12048e6   1.01158e6   8.72085e5  706488.0
+╭───────────────────────╮
+│ 4×6 Raster{Float64,2} │
+├───────────────────────┴─────────────────────────────────────────────────── dims ┐
+  ↓ X Projected{Float64} 90.0:10.0:120.0 ForwardOrdered Regular Intervals{Start},
+  → Y Projected{Float64} 0.0:10.0:50.0 ForwardOrdered Regular Intervals{Start}
+├───────────────────────────────────────────────────────────────────────── raster ┤
+  extent: Extent(X = (90.0, 130.0), Y = (0.0, 60.0))
+
+  crs: EPSG:4326
+└─────────────────────────────────────────────────────────────────────────────────┘
+   ↓ →  0.0        10.0        20.0        30.0            40.0      50.0
+  90.0  1.23017e6   1.19279e6   1.11917e6   1.01154e6  873182.0  708290.0
+ 100.0  1.23017e6   1.19279e6   1.11917e6   1.01154e6  873182.0  708290.0
+ 110.0  1.23017e6   1.19279e6   1.11917e6   1.01154e6  873182.0  708290.0
+ 120.0  1.23017e6   1.19279e6   1.11917e6   1.01154e6  873182.0  708290.0
 ```
 $EXPERIMENTAL
 """
-cellsize(args...; kw...) = throw_extension_error(cellsize, "ArchGDAL", :RastersArchGDALExt, args)
+cellarea(x; kw...) = cellarea(dims(x, (XDim, YDim)); kw...)
+function cellarea(dims::Tuple{<:XDim, <:YDim}; radius = 6371008.8, area_in_crs = false)
+    isintervals(dims) || throw(ArgumentError("Cannot calculate cell size for a `Raster` with `Points` sampling."))
+    areas = if area_in_crs
+        _planar_cellarea(dims)
+    else
+       _spherical_cellarea(dims; radius)
+    end
+    return Raster(areas; dims)
+
+end
+
+_spherical_cellarea(args...; kw...) = throw_extension_error(_spherical_cellarea, "ArchGDAL", :RastersArchGDALExt, args)
+
+function _planar_cellarea(dims::Tuple{<:XDim, <:YDim})
+    xbnds, ybnds = DD.intervalbounds(dims)
+    broadcast(xb -> xb[2] - xb[1], xbnds) .* broadcast(yb -> yb[2] - yb[1], ybnds)'
+end
+
+function cellsize(args...; kw...) 
+    @warn """
+cellsize is deprecated and will be removed in a future version, use cellarea instead. 
+Note that cellarea returns the area in square m, while cellsize still uses square km.
+"""
+    return cellarea(args...; kw..., radius = 6371.0088)
+end
 
 # Other shared stubs
 function layerkeys end

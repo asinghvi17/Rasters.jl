@@ -1,15 +1,15 @@
 function _great_circle_bearing(lon1::AbstractFloat, lat1::AbstractFloat, lon2::AbstractFloat, lat2::AbstractFloat)
     dLong = lon1 - lon2
 
-    s = cos(lat2)*sin(dLong)
-    c = cos(lat1)*sin(lat2) - sin(lat1)*cos(lat2)*cos(dLong)
+    s = cosd(lat2)*sind(dLong)
+    c = cosd(lat1)*sind(lat2) - sind(lat1)*cosd(lat2)*cosd(dLong)
 
     return atan(s, c)
 end
 
 ## Get the area of a LinearRing with coordinates in radians
 # Using Gidard's theorem
-function _area_from_rads(ring; R = 6371.0088)
+function _linearring_area(ring; radius)
     n = GI.npoint(ring)
     area = -(n-3)*pi
 
@@ -28,30 +28,23 @@ function _area_from_rads(ring; R = 6371.0088)
         point = nextpoint
     end
     
-    return area*R^2
+    return area*radius^2
 end
 
-_area_from_coords(transform, geom) = _area_from_coords(transform, GI.trait(geom), geom)
-_area_from_coords(geom) = _area_from_coords(GI.trait(geom), geom)
-function _area_from_coords(::GI.LinearRingTrait, ring) # no ArchGDAL, assumes degrees
+_area_from_coords(transform, geom; radius) = _area_from_coords(transform, GI.trait(geom), geom; radius)
+function _area_from_coords(transform::AG.CoordTransform, ::GI.LinearRingTrait, ring; radius)
     points = map(GI.getpoint(ring)) do p 
-        (deg2rad(GI.x(p)), deg2rad(GI.y(p)))
+        t = AG.transform!(AG.createpoint(p...), transform)
+        (GI.x(t), GI.y(t))
     end
+    return _linearring_area(GI.LinearRing(points); radius)
+end
 
-    return _area_from_rads(GI.LinearRing(points))
-end
-function _area_from_coords(transform::ArchGDAL.CoordTransform, ::GI.LinearRingTrait, ring)
-    points = map(GI.getpoint(ring)) do p 
-        t = ArchGDAL.transform!(ArchGDAL.createpoint(p...), transform)
-        (deg2rad(GI.x(t)), deg2rad(GI.y(t)))
-    end
-    return _area_from_rads(GI.LinearRing(points))
-end
 # For lat-lon projections. Get the area of each latitudinal band, then multiply by the width
-function _area_from_lonlat(lon::XDim, lat::YDim; R = 6371.0088)
-    two_pi_R2 = 2 * pi * R * R
+function _area_from_lonlat(lon::XDim, lat::YDim; radius)
+    two_pi_R2 = 2 * pi * radius * radius
     band_area = broadcast(DD.intervalbounds(lat)) do yb
-        two_pi_R2 * (sin(deg2rad(yb[2])) - sin(deg2rad(yb[1])))
+        two_pi_R2 * (sind(yb[2]) - sind(yb[1]))
     end
     
     broadcast(DD.intervalbounds(lon), band_area') do xb, ba
@@ -59,16 +52,17 @@ function _area_from_lonlat(lon::XDim, lat::YDim; R = 6371.0088)
     end
 end
 
-function cellsize(dims::Tuple{<:XDim, <:YDim})
+function _spherical_cellarea(dims::Tuple{<:XDim, <:YDim}; radius = 6371008.8)
     # check the dimensions 
     isnothing(crs(dims)) && _no_crs_error()
-    any(d -> d isa Points, sampling.(dims)) && throw(ArgumentError("Cannot calculate cell size for a `Raster` with `Points` sampling."))
 
-    areas = if convert(CoordSys, crs(dims)) == CoordSys("Earth Projection 1, 104") # check if need to reproject
-        _area_from_lonlat(dims...)
-    else 
+    areas = if _isdegrees(crs(dims)) # check if need to reproject
+        _area_from_lonlat(dims...; radius)
+    elseif !isnothing(mappedcrs(dims)) && _isdegrees(mappedcrs(dims))
+        _area_from_lonlat(reproject(dims; crs = mappedcrs(dims))...; radius)
+    else
         xbnds, ybnds = DD.intervalbounds(dims)
-        ArchGDAL.crs2transform(crs(dims), EPSG(4326), order = :trad) do transform
+        AG.crs2transform(crs(dims), EPSG(4326), order = :trad) do transform
             [_area_from_coords(
                 transform,         
                 GI.LinearRing([
@@ -77,14 +71,22 @@ function cellsize(dims::Tuple{<:XDim, <:YDim})
                     (xb[2], yb[2]), 
                     (xb[1], yb[2]),
                     (xb[1], yb[1])
-                ]))
+                ]); 
+                radius
+                )
                 for xb in xbnds, yb in ybnds]
         end
     end
-
-    return Raster(areas, dims)
 end
 
-function cellsize(x::Union{<:AbstractRaster, <:AbstractRasterStack, <:RA.DimTuple})
-    cellsize(dims(x, (XDim, YDim)))
+# TODO: put these in ArchGDAL
+_isgeographic(crs) = _isgeographic(AG.importCRS(crs))
+_isgeographic(crs::AG.ISpatialRef) = AG.GDAL.osrisgeographic(crs) |> Bool
+
+_isdegrees(crs) = _isdegrees(AG.importCRS(crs))
+function _isdegrees(crs::AG.ISpatialRef)
+    _isgeographic(crs) || return false
+    pointer = Ref{Cstring}()
+    result = AG.GDAL.osrgetangularunits(crs, pointer)
+    return unsafe_string(pointer[]) == "degree"
 end
